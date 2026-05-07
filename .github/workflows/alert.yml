@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests pandas
+        run: pip install requests pandas pytz
 
       - name: Run alert script
         env:
