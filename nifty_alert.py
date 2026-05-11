@@ -1,41 +1,30 @@
 """
 Nifty Futures — BB + RSI Alert System
-Data    : NSE India (free, no subscription)
+Data    : Yahoo Finance (free)
 Alerts  : Telegram
-Version : 2.0 — complete rewrite, no paid APIs
+Version : 2.1
 """
 
 import os
 import time
 import requests
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime
 import pytz
 
-# ── SECRETS (injected via GitHub Actions secrets) ────────────────────────────
 TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
+FORCE_RUN         = os.environ.get("FORCE_RUN", "false").lower() == "true"
 
-# ── CONFIG ───────────────────────────────────────────────────────────────────
-BB_PERIOD         = 20
+BB_PERIOD         = 50
 BB_STD            = 2.0
 RSI_PERIOD        = 14
-BB_THRESHOLD_PCT  = 1.0
+BB_THRESHOLD_PCT  = 0.5
 RSI_OVERSOLD      = 35
 RSI_OVERBOUGHT    = 65
 LOT_SIZE          = 65
 CHARGES_PER_TRADE = 1000
 IST               = pytz.timezone("Asia/Kolkata")
-FORCE_RUN         = os.environ.get("FORCE_RUN", "false").lower() == "true"
-
-NSE_HEADERS = {
-    "User-Agent"     : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/120.0.0.0 Safari/537.36",
-    "Accept"         : "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer"        : "https://www.nseindia.com/",
-}
 
 
 def send_telegram(message: str):
@@ -63,50 +52,31 @@ def is_closing_time() -> bool:
     return now.hour == 15 and 10 <= now.minute <= 20
 
 
-def get_nse_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(NSE_HEADERS)
+def get_candles() -> pd.DataFrame:
+    url     = "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=15m&range=5d"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        session.get("https://www.nseindia.com", timeout=10)
-        time.sleep(1)
-    except Exception as e:
-        print(f"NSE session error: {e}")
-    return session
-
-
-def get_candles_nse() -> pd.DataFrame:
-    session = get_nse_session()
-    url = "https://www.nseindia.com/api/chart-databyindex?index=NIFTY&indices=true"
-    try:
-        r = session.get(url, timeout=15)
-        print(f"NSE response: {r.status_code}")
+        r = requests.get(url, headers=headers, timeout=15)
+        print(f"Yahoo response: {r.status_code}")
         if r.status_code != 200:
-            print(f"NSE error: {r.text[:200]}")
+            print(f"Yahoo error: {r.text[:200]}")
             return pd.DataFrame()
-
-        data  = r.json()
-        graph = data.get("grapthData") or data.get("graphData") or []
-        if not graph:
-            print(f"NSE keys: {list(data.keys())}")
-            return pd.DataFrame()
-
-        df = pd.DataFrame(graph, columns=["timestamp_ms", "close"])
-        df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
+        data      = r.json()
+        result    = data["chart"]["result"][0]
+        timestamps= result["timestamp"]
+        quote     = result["indicators"]["quote"][0]
+        df = pd.DataFrame({
+            "timestamp": pd.to_datetime(timestamps, unit="s", utc=True),
+            "open" : quote["open"],
+            "high" : quote["high"],
+            "low"  : quote["low"],
+            "close": quote["close"],
+        })
         df["timestamp"] = df["timestamp"].dt.tz_convert(IST)
-        df = df.sort_values("timestamp").reset_index(drop=True)
-
-        df = df.set_index("timestamp")
-        df_15 = df["close"].resample("15min").ohlc().dropna()
-        df_15.columns = ["open", "high", "low", "close"]
-        df_15 = df_15.reset_index()
-
-        print(f"Candles received: {len(df_15)}")
-        if len(df_15) > 0:
-            last = df_15.iloc[-1]
-            print(f"Last candle — Time: {last['timestamp']} | Close: {last['close']:.0f}")
-
-        return df_15
-
+        df = df.dropna().sort_values("timestamp").reset_index(drop=True)
+        print(f"Candles received: {len(df)}")
+        print(f"Last close: {df.iloc[-1]['close']:.0f}")
+        return df
     except Exception as e:
         print(f"Candle fetch error: {e}")
         return pd.DataFrame()
@@ -227,16 +197,11 @@ def main():
 
     if not FORCE_RUN and not is_market_open():
         print("Market closed. Skipping.")
-        send_telegram(
-            f"🤖 <b>System check</b> — {now_ist.strftime('%H:%M IST')}\n"
-            f"Market closed. Script is alive and working ✅"
-        )
         return
 
-    df = get_candles_nse()
-
+    df = get_candles()
     if df.empty or len(df) < BB_PERIOD + 5:
-        msg = f"⚠️ Insufficient data ({len(df)} candles). NSE may be unavailable right now."
+        msg = f"⚠️ Insufficient data ({len(df)} candles). Yahoo may be unavailable."
         print(msg)
         send_telegram(msg)
         return
