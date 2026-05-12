@@ -1,0 +1,25 @@
+name: FO HA Alert
+
+on:
+  schedule:
+    - cron: "30 3 * * 1-5" # 9:00 AM IST
+    - cron: "50 9 * * 1-5" # 3:20 PM IST
+  workflow_dispatch:
+
+jobs:
+  run-fo-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install requests pandas pytz
+      - name: Run FO alert
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_RUN: "true"
+          MODE: "eod"
+        run: python fo_ha_alert.py
